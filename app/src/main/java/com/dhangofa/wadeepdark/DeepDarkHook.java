@@ -1,14 +1,8 @@
 package com.dhangofa.wadeepdark;
 
-import android.content.res.ColorStateList;
+import android.content.res.Resources;
 import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.drawable.ColorDrawable;
-import android.view.View;
-
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Set;
+import android.view.ContextThemeWrapper;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -22,80 +16,60 @@ public class DeepDarkHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if (!lpparam.packageName.equals("com.whatsapp")) return;
 
-        final int amoledBlack = Color.parseColor("#000000");
-        final int darkGray = Color.parseColor("#0A0A0A");
-
-        // Target RGB values (Ignoring Alpha/Transparency for now)
-        final Set<Integer> waBackgroundsRGB = new HashSet<>(Arrays.asList(
-            0x111b21, 0x0b141a, 0x0c151c
-        ));
-
-        final Set<Integer> waUIElementsRGB = new HashSet<>(Arrays.asList(
-            0x202c33, 0x1f2c34, 0x182229
-        ));
-
-        XC_MethodHook colorInterceptHook = new XC_MethodHook() {
+        // Force-replace the color values in the app's internal theme
+        // This targets the root of the "greenish" problem
+        XC_MethodHook themeHook = new XC_MethodHook() {
             @Override
-            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                if (param.args[0] == null) return;
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                Resources res = (Resources) param.getResult();
                 
-                int originalColor = (Integer) param.args[0];
-                
-                // Extract just the RGB part to match WhatsApp's colors
-                int rgbOnly = originalColor & 0x00FFFFFF;
-
-                if (waBackgroundsRGB.contains(rgbOnly)) {
-                    // Keep WhatsApp's original transparency, but inject our AMOLED black
-                    param.args[0] = (originalColor & 0xFF000000) | (amoledBlack & 0x00FFFFFF);
-                } else if (waUIElementsRGB.contains(rgbOnly)) {
-                    // Keep WhatsApp's original transparency, but inject our dark gray
-                    param.args[0] = (originalColor & 0xFF000000) | (darkGray & 0x00FFFFFF);
-                }
+                // This is a direct override of the standard color lookup table
+                // WhatsApp uses these specific IDs for their dark mode palette
+                try {
+                    // Try to force these to black if accessed via Resources
+                    XposedHelpers.setStaticObjectField(res.getClass(), "primary_surface", Color.BLACK);
+                    XposedHelpers.setStaticObjectField(res.getClass(), "chat_background", Color.BLACK);
+                } catch (Throwable ignored) {}
             }
         };
 
         try {
-            // 1. Hook Material Design ColorStateLists (Catches most XML theme colors)
+            // Hook the creation of the theme context
             XposedHelpers.findAndHookMethod(
-                ColorStateList.class, 
-                "valueOf", 
-                int.class, 
-                colorInterceptHook
+                ContextThemeWrapper.class,
+                "getResources",
+                themeHook
             );
 
-            // 2. Hook Canvas Paint (Catches custom drawn chat bubbles)
+            // Hook the basic color getter as a fallback
             XposedHelpers.findAndHookMethod(
-                Paint.class, 
-                "setColor", 
-                int.class, 
-                colorInterceptHook
+                Resources.class,
+                "getColor",
+                int.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        int color = (int) param.getResult();
+                        // If it's a "WhatsApp Greenish" color (roughly), force it to black
+                        if (isWhatsAppGreen(color)) {
+                            param.setResult(Color.BLACK);
+                        }
+                    }
+                }
             );
 
-            // 3. Hook standard ColorDrawables
-            XposedHelpers.findAndHookConstructor(
-                ColorDrawable.class, 
-                int.class, 
-                colorInterceptHook
-            );
-            
-            XposedHelpers.findAndHookMethod(
-                ColorDrawable.class, 
-                "setColor", 
-                int.class, 
-                colorInterceptHook
-            );
-
-            // 4. Hook explicit View background color setters
-            XposedHelpers.findAndHookMethod(
-                View.class, 
-                "setBackgroundColor", 
-                int.class, 
-                colorInterceptHook
-            );
-
-            XposedBridge.log("WaDeepDark: Deep Java UI hooks applied successfully.");
+            XposedBridge.log("WaDeepDark: Theme-level hooks injected.");
         } catch (Throwable t) {
             XposedBridge.log("WaDeepDark Error: " + t.getMessage());
         }
+    }
+
+    private boolean isWhatsAppGreen(int color) {
+        // WhatsApp's greenish-dark is generally in this range of the color spectrum
+        int r = Color.red(color);
+        int g = Color.green(color);
+        int b = Color.blue(color);
+        // Returns true if the color is "darkish-green"
+        return (r < 50 && g > 15 && g < 60 && b > 20 && b < 70);
     }
 }
