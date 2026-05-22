@@ -19,6 +19,9 @@
         <meta-data
             android:name="xposedscope"
             android:resource="@array/xposed_scope" />
+        <meta-data
+            android:name="xposedinit"
+            android:value="com.dhangofa.wadeepdark.DeepDarkHook" />
             
     </application>
 </manifest>
