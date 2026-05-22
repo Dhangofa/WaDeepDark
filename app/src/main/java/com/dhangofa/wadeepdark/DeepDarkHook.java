@@ -20,20 +20,19 @@ public class DeepDarkHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if (!lpparam.packageName.equals("com.whatsapp")) return;
 
-        // 1. Hook for standard 32-bit INT colors
+        // General Color Interceptor
         XC_MethodHook intColorHook = new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                 if (param.args[0] == null) return;
                 int color = (int) param.args[0];
                 if (isWhatsAppGreen(color)) {
-                    // Keep original transparency (Alpha), force RGB to 000000 (Black)
-                    param.args[0] = color & 0xFF000000;
+                    param.args[0] = color & 0xFF000000; // Keep transparency, force black
                 }
             }
         };
 
-        // 2. Hook for Methods that RETURN an int color
+        // Return Color Interceptor (For XML inflation)
         XC_MethodHook returnIntColorHook = new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
@@ -45,67 +44,62 @@ public class DeepDarkHook implements IXposedHookLoadPackage {
             }
         };
 
-        // 3. Hook for Jetpack Compose & Android 10+ 64-bit LONG colors (The Missing Link)
-        XC_MethodHook longColorHook = new XC_MethodHook() {
+        // THE SILVER BULLET: Catches XML-inflated Main Backgrounds, App Bars, and Nav Bars
+        XC_MethodHook drawableDrawHook = new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                if (param.args[0] == null) return;
-                long colorLong = (long) param.args[0];
-                
-                // Convert Android's 64-bit color back to a readable 32-bit int
-                int colorInt = Color.toArgb(colorLong);
-                
-                if (isWhatsAppGreen(colorInt)) {
-                    // Repack it as pure black into the 64-bit format
-                    int alpha = Color.alpha(colorInt);
-                    param.args[0] = Color.pack(Color.argb(alpha, 0, 0, 0));
-                }
+                try {
+                    ColorDrawable cd = (ColorDrawable) param.thisObject;
+                    int color = cd.getColor();
+                    if (isWhatsAppGreen(color)) {
+                        // Modify the drawable's color right before it hits the canvas
+                        cd.setColor(color & 0xFF000000);
+                    }
+                } catch (Throwable ignored) {}
             }
         };
 
         try {
-            // == JETPACK COMPOSE & HARDWARE ACCELERATION ==
-            // These catch the modern UI engine that bypassed our previous hooks
-            XposedHelpers.findAndHookMethod(Paint.class, "setColor", long.class, longColorHook);
-            XposedHelpers.findAndHookMethod(Canvas.class, "drawColor", long.class, longColorHook);
-        } catch (Throwable t) {
-            XposedBridge.log("WaDeepDark: Long hooks skipped (Old Android Version)");
-        }
+            // Hooking the actual drawing of solid backgrounds
+            XposedHelpers.findAndHookMethod(ColorDrawable.class, "draw", Canvas.class, drawableDrawHook);
 
-        try {
-            // == TRADITIONAL UI & XML ==
+            // Hooking Paint & Canvas (Catches Custom bubbles and dynamic UI)
             XposedHelpers.findAndHookMethod(Paint.class, "setColor", int.class, intColorHook);
             XposedHelpers.findAndHookMethod(Canvas.class, "drawColor", int.class, intColorHook);
-            XposedHelpers.findAndHookMethod(View.class, "setBackgroundColor", int.class, intColorHook);
-            XposedHelpers.findAndHookMethod(ColorDrawable.class, "setColor", int.class, intColorHook);
-            XposedHelpers.findAndHookConstructor(ColorDrawable.class, int.class, intColorHook);
             
-            // Catches colors inflated from WhatsApp's raw XML files
-            XposedHelpers.findAndHookMethod(TypedArray.class, "getColor", int.class, int.class, returnIntColorHook);
-            
-            // Catches dynamic theme changes
-            XposedHelpers.findAndHookMethod(ColorStateList.class, "getColorForState", int[].class, int.class, returnIntColorHook);
-            XposedHelpers.findAndHookMethod(ColorStateList.class, "getDefaultColor", returnIntColorHook);
-
-            // == CHAT BUBBLES == 
-            // WhatsApp tints their PNG chat bubbles using ColorFilters. We must hook these!
+            // Hooking Color Filters (Catches the PNG tint for chat bubbles)
             XposedHelpers.findAndHookConstructor(android.graphics.PorterDuffColorFilter.class, int.class, android.graphics.PorterDuff.Mode.class, intColorHook);
             if (android.os.Build.VERSION.SDK_INT >= 29) {
                 XposedHelpers.findAndHookConstructor(android.graphics.BlendModeColorFilter.class, int.class, android.graphics.BlendMode.class, intColorHook);
             }
 
-            XposedBridge.log("WaDeepDark: Full Spectrum Rendering Engine Intercept Active!");
+            // Hooking Explicit Views & XML inflation
+            XposedHelpers.findAndHookMethod(View.class, "setBackgroundColor", int.class, intColorHook);
+            XposedHelpers.findAndHookMethod(TypedArray.class, "getColor", int.class, int.class, returnIntColorHook);
+            XposedHelpers.findAndHookMethod(ColorStateList.class, "getColorForState", int[].class, int.class, returnIntColorHook);
+            XposedHelpers.findAndHookMethod(ColorStateList.class, "getDefaultColor", returnIntColorHook);
+
+            XposedBridge.log("WaDeepDark: Advanced Draw-Time Intercept Active!");
         } catch (Throwable t) {
             XposedBridge.log("WaDeepDark Error: " + t.getMessage());
         }
     }
 
     private boolean isWhatsAppGreen(int color) {
+        int a = Color.alpha(color);
+        if (a < 10) return false; // Ignore highly transparent pixels to prevent black boxes
+
         int r = Color.red(color);
         int g = Color.green(color);
         int b = Color.blue(color);
-        // Safely targets WhatsApp's entire dark mode spectrum (Including #111b21, #0b141a, #202c33)
-        // Without accidentally turning green texts or checkmarks to black
-        return (r < 45 && g > 15 && g < 75 && b > 20 && b < 85);
+
+        // 1. Catches the Main Backgrounds, App Bars, Nav Bars (e.g., #111b21, #202c33)
+        boolean isDarkGrayGreen = (r < 50 && g > 15 && g < 60 && b > 20 && b < 70);
+        
+        // 2. Catches the Outgoing Chat Bubble (Dark Teal e.g., #005c4b)
+        // Red is very low, Green is high, Blue is medium.
+        boolean isOutgoingBubble = (r < 40 && g > 50 && g < 120 && b > 40 && b < 100);
+
+        return isDarkGrayGreen || isOutgoingBubble;
     }
-        }
+}
