@@ -1,15 +1,14 @@
 package com.dhangofa.wadeepdark;
 
+import android.app.Activity;
 import android.content.res.ColorStateList;
 import android.content.res.TypedArray;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Path;
-import android.graphics.RectF;
 import android.graphics.drawable.ColorDrawable;
+import android.os.Bundle;
 import android.view.View;
-import android.view.Window;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -23,108 +22,87 @@ public class DeepDarkHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if (!lpparam.packageName.equals("com.whatsapp")) return;
 
-        // 1. General Color Interceptor (For standard INTs)
-        XC_MethodHook intColorHook = new XC_MethodHook() {
+        final int pureBlack = Color.parseColor("#000000");
+        final int darkGrey = Color.parseColor("#151515"); // Premium dark grey for bubbles/menus
+
+        // The master color modifier
+        XC_MethodHook colorInterceptHook = new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                 if (param.args[0] == null) return;
-                int color = (int) param.args[0];
-                if (isWhatsAppBackground(color)) {
-                    param.args[0] = color & 0xFF000000; // Force black, keep transparency
-                }
+                param.args[0] = getModifiedColor((int) param.args[0], pureBlack, darkGrey);
             }
         };
 
-        // 2. Return Color Interceptor (For XML inflation)
-        XC_MethodHook returnIntColorHook = new XC_MethodHook() {
+        XC_MethodHook returnColorHook = new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                 if (param.getResult() == null) return;
-                int color = (int) param.getResult();
-                if (isWhatsAppBackground(color)) {
-                    param.setResult(color & 0xFF000000);
-                }
+                param.setResult(getModifiedColor((int) param.getResult(), pureBlack, darkGrey));
             }
         };
 
-        // 3. Compose Shape Interceptor (Catches Nav Bars, App Bars, and Compose rectangles)
-        XC_MethodHook canvasShapeHook = new XC_MethodHook() {
+        // THE MAIN SCREEN FIX: Force the root window background of every screen to be black
+        XposedHelpers.findAndHookMethod(Activity.class, "onCreate", Bundle.class, new XC_MethodHook() {
             @Override
-            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                // Find the Paint object in the arguments (usually the last argument)
-                Paint paint = null;
-                for (int i = param.args.length - 1; i >= 0; i--) {
-                    if (param.args[i] instanceof Paint) {
-                        paint = (Paint) param.args[i];
-                        break;
-                    }
-                }
-                
-                if (paint != null) {
-                    int color = paint.getColor();
-                    if (isWhatsAppBackground(color)) {
-                        paint.setColor(color & 0xFF000000);
-                    }
-                }
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                Activity activity = (Activity) param.thisObject;
+                try {
+                    activity.getWindow().setBackgroundDrawable(new ColorDrawable(pureBlack));
+                } catch (Throwable ignored) {}
             }
-        };
+        });
 
         try {
-            // == JETPACK COMPOSE & GEOMETRY == (Fixes Nav Bar, Headers, Compose UI)
-            XposedHelpers.findAndHookMethod(Canvas.class, "drawRect", float.class, float.class, float.class, float.class, Paint.class, canvasShapeHook);
-            XposedHelpers.findAndHookMethod(Canvas.class, "drawRect", RectF.class, Paint.class, canvasShapeHook);
-            XposedHelpers.findAndHookMethod(Canvas.class, "drawRect", android.graphics.Rect.class, Paint.class, canvasShapeHook);
-            XposedHelpers.findAndHookMethod(Canvas.class, "drawRoundRect", RectF.class, float.class, float.class, Paint.class, canvasShapeHook);
-            XposedHelpers.findAndHookMethod(Canvas.class, "drawPath", Path.class, Paint.class, canvasShapeHook);
-
-            // == WINDOW SURFACES == (Fixes the absolute base background of Settings and Chats List)
-            XposedHelpers.findAndHookMethod(Window.class, "setStatusBarColor", int.class, intColorHook);
-            XposedHelpers.findAndHookMethod(Window.class, "setNavigationBarColor", int.class, intColorHook);
+            // Hook standard UI drawing
+            XposedHelpers.findAndHookMethod(Paint.class, "setColor", int.class, colorInterceptHook);
+            XposedHelpers.findAndHookMethod(Canvas.class, "drawColor", int.class, colorInterceptHook);
+            XposedHelpers.findAndHookMethod(View.class, "setBackgroundColor", int.class, colorInterceptHook);
             
-            // == STANDARD RENDERERS ==
-            XposedHelpers.findAndHookMethod(ColorDrawable.class, "draw", Canvas.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    ColorDrawable cd = (ColorDrawable) param.thisObject;
-                    if (isWhatsAppBackground(cd.getColor())) cd.setColor(cd.getColor() & 0xFF000000);
-                }
-            });
-            XposedHelpers.findAndHookMethod(Paint.class, "setColor", int.class, intColorHook);
-            XposedHelpers.findAndHookMethod(Canvas.class, "drawColor", int.class, intColorHook);
+            // Hook Drawables
+            XposedHelpers.findAndHookMethod(ColorDrawable.class, "setColor", int.class, colorInterceptHook);
+            XposedHelpers.findAndHookConstructor(ColorDrawable.class, int.class, colorInterceptHook);
+            
+            // Hook XML colors
+            XposedHelpers.findAndHookMethod(TypedArray.class, "getColor", int.class, int.class, returnColorHook);
+            XposedHelpers.findAndHookMethod(ColorStateList.class, "getDefaultColor", returnColorHook);
+            XposedHelpers.findAndHookMethod(ColorStateList.class, "getColorForState", int[].class, int.class, returnColorHook);
 
-            // == CHAT BUBBLE FILTERS ==
-            XposedHelpers.findAndHookConstructor(android.graphics.PorterDuffColorFilter.class, int.class, android.graphics.PorterDuff.Mode.class, intColorHook);
+            // Hook Chat Bubble Filters
+            XposedHelpers.findAndHookConstructor(android.graphics.PorterDuffColorFilter.class, int.class, android.graphics.PorterDuff.Mode.class, colorInterceptHook);
             if (android.os.Build.VERSION.SDK_INT >= 29) {
-                XposedHelpers.findAndHookConstructor(android.graphics.BlendModeColorFilter.class, int.class, android.graphics.BlendMode.class, intColorHook);
+                XposedHelpers.findAndHookConstructor(android.graphics.BlendModeColorFilter.class, int.class, android.graphics.BlendMode.class, colorInterceptHook);
             }
 
-            // == EXPLICIT VIEWS ==
-            XposedHelpers.findAndHookMethod(View.class, "setBackgroundColor", int.class, intColorHook);
-            XposedHelpers.findAndHookMethod(TypedArray.class, "getColor", int.class, int.class, returnIntColorHook);
-            XposedHelpers.findAndHookMethod(ColorStateList.class, "getDefaultColor", returnIntColorHook);
-
-            XposedBridge.log("WaDeepDark: Compose Geometry & Window Hooks Active!");
+            XposedBridge.log("WaDeepDark: Precise UI Targeting Active!");
         } catch (Throwable t) {
             XposedBridge.log("WaDeepDark Error: " + t.getMessage());
         }
     }
 
-    private boolean isWhatsAppBackground(int color) {
-        int a = Color.alpha(color);
-        if (a < 10) return false; // Ignore highly transparent elements
+    private int getModifiedColor(int originalColor, int pureBlack, int darkGrey) {
+        int a = Color.alpha(originalColor);
+        if (a == 0) return originalColor; // Ignore transparent pixels entirely
 
-        int r = Color.red(color);
-        int g = Color.green(color);
-        int b = Color.blue(color);
+        int r = Color.red(originalColor);
+        int g = Color.green(originalColor);
+        int b = Color.blue(originalColor);
 
-        // 1. Broad Dark Mode Detector:
-        // Catches any dark grey/greenish tint (including Material You shifts) 
-        // while ignoring pure black (r+g+b > 15) so we don't process already-black pixels.
-        boolean isDarkBackground = (r < 55 && g < 65 && b < 75 && (r + g + b) > 15);
+        // 1. Deep Backgrounds (#0b141a, #111b21) -> Turn Pure Black
+        if (r >= 5 && r <= 25 && g >= 15 && g <= 35 && b >= 20 && b <= 40) {
+            return (originalColor & 0xFF000000) | (pureBlack & 0x00FFFFFF);
+        }
         
-        // 2. Outgoing Chat Bubble (Dark Teal)
-        boolean isOutgoingBubble = (r < 40 && g > 50 && g < 120 && b > 40 && b < 100);
+        // 2. Menus, App Bars, Nav Bars, Incoming Bubbles (#182229, #202c33, #233138) -> Turn Dark Grey
+        if (r >= 20 && r <= 45 && g >= 30 && g <= 55 && b >= 35 && b <= 65) {
+            return (originalColor & 0xFF000000) | (darkGrey & 0x00FFFFFF);
+        }
 
-        return isDarkBackground || isOutgoingBubble;
+        // 3. Outgoing Bubble (#005c4b) -> Turn Dark Grey
+        if (r <= 20 && g >= 70 && g <= 110 && b >= 60 && b <= 90) {
+            return (originalColor & 0xFF000000) | (darkGrey & 0x00FFFFFF);
+        }
+
+        return originalColor; // Leave all other colors (like green text/icons) alone
     }
 }
