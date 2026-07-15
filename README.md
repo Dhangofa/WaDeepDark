@@ -21,8 +21,7 @@ A minimalist, ultra-lightweight (~20KB) LSPosed module that forces a pure AMOLED
 3. Open the **LSPosed Manager** app.
 4. Go to Modules -> Enable **WaDeepDark**.
 5. Ensure **WhatsApp** (`com.whatsapp`) is checked in the module scope.
-6. **Crucial Step:** Open WhatsApp, go to `Settings > Chats > Wallpaper > Change > Solid Colors` and choose the first pure black color to clear the default doodle background.
-7. **Force Stop** WhatsApp from your Android App Settings, then reopen it to clear the UI cache.
+6. **Force Stop** WhatsApp from your Android App Settings, then reopen it to clear the UI cache or restart your phone.
 ## 🛠️ How it Works (For Developers)
 Heavy WhatsApp mods often inject CSS, hook specific obfuscated `View` classes, or rely on `Resources.getColor()`. Those methods break constantly because modern WhatsApp uses Jetpack Compose, dynamic Material You theming, and heavily cached `ColorStateLists`. 
 WaDeepDark takes a "God Mode", system-level approach. It hooks directly into `android.graphics.Canvas`, `android.graphics.Paint`, and `android.app.Activity`. 
